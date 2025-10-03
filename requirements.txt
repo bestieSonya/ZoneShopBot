@@ -1,5 +1,5 @@
 Python 3.13.7
 python-telegram-bot[rate-limiter,job-queue]==22.5  # AIORateLimiter и JobQueue
 httpx>=0.27,<0.29                                   # Транспорт HTTPXRequest
-
+pillow==10.4.0 #Библиотека для вывода капчи
 
