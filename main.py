@@ -1,9 +1,12 @@
-#простой пример 
-import asyncio
 import logging
 import os
+import sys
+import pathlib
 from typing import Final
 
+sys.path.append(str(pathlib.Path(__file__).resolve().parent))
+
+from dotenv import load_dotenv
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import (
@@ -12,61 +15,88 @@ from telegram.ext import (
     MessageHandler,
     ContextTypes,
     filters,
-    AIORateLimiter,   # убрать, если не установлен extras [rate-limiter]
-    JobQueue          # убрать, если не установлен extras [job-queue]
+    AIORateLimiter,
+    Defaults
 )
+
+try:
+    from middlewaresBeta.auth import handlers, UD_PASSED
+    AUTH_ENABLED = True
+except ImportError:
+    AUTH_ENABLED = False
+    UD_PASSED = "auth_passed"
+
+load_dotenv()
 
 BOT_TOKEN: Final[str] = os.getenv("TOKEN", "").strip()
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
+
 logger = logging.getLogger(__name__)
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text("Привет! Бот запущен и готов к работе ✅")
+async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    await update.message.reply_text(f"Привет, {user.first_name}! Бот запущен.")
 
-async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def echo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if AUTH_ENABLED and not context.user_data.get(UD_PASSED):
+        return
+    
     if update.message and update.message.text:
         await update.message.reply_text(f"Echo: {update.message.text}")
 
-def build_app() -> Application:
-    if not BOT_TOKEN:
-        raise RuntimeError("Не задан BOT_TOKEN в окружении")
+async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if AUTH_ENABLED and not context.user_data.get(UD_PASSED):
+        return
+    
+    help_text = (
+        "<b>Доступные команды:</b>\n"
+        "/help - справка\n"
+        "/start - перезапуск\n\n"
+        "Отправьте любое сообщение для эхо."
+    )
+    await update.message.reply_text(help_text)
 
-    # Если extras [rate-limiter] не установлен, удалите rate_limiter=
+def create_application() -> Application:
+    defaults = Defaults(parse_mode=ParseMode.HTML)
+    
     app = (
-        Application
-        .builder()
+        Application.builder()
         .token(BOT_TOKEN)
-        .rate_limiter(AIORateLimiter())  # требует extras [rate-limiter]
-        .parse_mode(ParseMode.HTML)
+        .rate_limiter(AIORateLimiter())
+        .defaults(defaults)
         .build()
     )
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
-
-    # Пример инициализации джобов (требует extras [job-queue])
-    jq: JobQueue = app.job_queue  # доступно по умолчанию, но APScheduler нужен для продвинутых кейсов
-    # jq.run_repeating(callback=..., interval=60, name="heartbeat")
-
+    
+    if AUTH_ENABLED:
+        conv_handler, gate_handler = handlers()
+        app.add_handler(conv_handler)
+        app.add_handler(gate_handler)
+    else:
+        app.add_handler(CommandHandler("start", start_handler))
+    
+    app.add_handler(CommandHandler("help", help_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo_handler))
+    
     return app
 
-async def amain() -> None:
-    app = build_app()
-    await app.initialize()
+def main() -> None:
+    if not BOT_TOKEN:
+        logger.error("BOT_TOKEN not found in environment")
+        return
+    
+    app = create_application()
+    logger.info("Bot starting...")
+    
     try:
-        await app.start()
-        await app.updater.start_polling(drop_pending_updates=True)
-        await app.updater.idle()
-    finally:
-        await app.stop()
-        await app.shutdown()
+        app.run_polling(drop_pending_updates=True)
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user")
+    except Exception as e:
+        logger.error(f"Bot error: {e}")
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(amain())
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Остановка бота")
+    main()
